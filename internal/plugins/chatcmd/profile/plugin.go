@@ -3,7 +3,6 @@ package profileplugin
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -27,8 +26,9 @@ func (p *Plugin) Init(_ *plugin.State, hub plugin.Hub) error {
 		Execute: func(ctx context.Context, params *plugin.ChatCommandInput) (*plugin.ChatCommandResponse, error) {
 			args := params.Args
 			if args == "" {
-				printCurrentProfile(params.AgentHandler.Config(), params.AgentHandler.Messages())
-				return plugin.NopChatCommandResponse, nil
+				return &plugin.ChatCommandResponse{
+					Stdout: CurrentProfileMarkdown(params.AgentHandler.Config(), params.AgentHandler.Messages()),
+				}, nil
 			}
 
 			if err := params.AgentHandler.Config().SetProfile(args); err != nil {
@@ -37,14 +37,18 @@ func (p *Plugin) Init(_ *plugin.State, hub plugin.Hub) error {
 
 			params.AgentHandler.Reconfigure()
 
-			fmt.Printf("Switched to profile: %s\n", args)
-			return plugin.NopChatCommandResponse, nil
+			return &plugin.ChatCommandResponse{
+				Stdout: fmt.Sprintf("Switched to profile: `%s`\n", args),
+			}, nil
 		},
 	})
 	return nil
 }
 
-func printCurrentProfile(cfg *config.Config, messages []openai.ChatCompletionMessage) {
+// CurrentProfileMarkdown renders the profile listing as markdown for the
+// unified chat-command output (ChatCommandResponse.Stdout), so /profile
+// prints through the same channel as /help and every other chat command.
+func CurrentProfileMarkdown(cfg *config.Config, messages []openai.ChatCompletionMessage) string {
 	profiles := cfg.Profiles()
 	current := cfg.String("profile")
 	model := cfg.ProfileParamString("llm.model")
@@ -56,12 +60,12 @@ func printCurrentProfile(cfg *config.Config, messages []openai.ChatCompletionMes
 		if p == current {
 			prefix = "*>"
 		}
-		fmt.Fprintf(&sb, "%s %s\n", prefix, p)
+		fmt.Fprintf(&sb, "%s `%s`\n", prefix, p)
 	}
 
-	fmt.Fprintf(&sb, "\nCurrent profile: %s\n", current)
-	fmt.Fprintf(&sb, "LLM model: %s\n", model)
+	fmt.Fprintf(&sb, "\nCurrent profile: `%s`\n", current)
+	fmt.Fprintf(&sb, "LLM model: `%s`\n", model)
 	fmt.Fprintf(&sb, "Total messages: %d\n", len(messages))
 
-	fmt.Fprint(os.Stdout, sb.String())
+	return sb.String()
 }
