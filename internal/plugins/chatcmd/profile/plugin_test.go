@@ -2,8 +2,6 @@ package profileplugin
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,31 +9,16 @@ import (
 
 	"github.com/wmentor/go-magnetar/internal/config"
 	"github.com/wmentor/go-magnetar/internal/plugin"
+	"github.com/wmentor/go-magnetar/internal/plugin/testdata"
 )
-
-type fakeAgentHandle struct {
-	cfg         *config.Config
-	messages    int
-	reconfigured int
-}
-
-func (h *fakeAgentHandle) Messages() []openai.ChatCompletionMessage {
-	return make([]openai.ChatCompletionMessage, h.messages)
-}
-func (h *fakeAgentHandle) SetMessages([]openai.ChatCompletionMessage) {}
-func (h *fakeAgentHandle) Config() *config.Config                    { return h.cfg }
-func (h *fakeAgentHandle) Reconfigure()                              { h.reconfigured++ }
-func (h *fakeAgentHandle) Compact() error                            { return nil }
-func (h *fakeAgentHandle) Reset()                                    {}
 
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	cfgYaml := "version: \"1.0\"\nprofile: main\nllm:\n  model: base-model\nprofiles:\n  main:\n    llm:\n      model: main-model\n  fast:\n    llm:\n      model: fast-model\n"
-	if err := os.WriteFile(path, []byte(cfgYaml), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	return loadConfig(t, "testdata/config.yml")
+}
+
+func loadConfig(t *testing.T, path string) *config.Config {
+	t.Helper()
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +58,11 @@ func TestProfileRegistration(t *testing.T) {
 func TestProfileListingUsesUnifiedOutput(t *testing.T) {
 	t.Parallel()
 	command := registeredCommand(t)
-	handler := &fakeAgentHandle{cfg: testConfig(t), messages: 3}
+	handler := testdata.NewAgentHandle(t)
+	handler.EXPECT().Config().Return(testConfig(t))
+	handler.EXPECT().Messages().Return(make([]openai.ChatCompletionMessage, 3))
+	// No Reconfigure expectation: a listing that reconfigures fails as an
+	// unexpected mock call.
 
 	response, err := command.Execute(context.Background(), &plugin.ChatCommandInput{
 		AgentHandler: handler,
@@ -85,9 +72,9 @@ func TestProfileListingUsesUnifiedOutput(t *testing.T) {
 	}
 
 	wantLines := []string{
-		"Available profiles:\n",
-		"  `fast`\n",
-		"*> `main`\n",
+		"Available profiles:\n\n",
+		"- `fast`\n",
+		"- **`main`**\n",
 		"\nCurrent profile: `main`\n",
 		"LLM model: `main-model`\n",
 		"Total messages: 3\n",
@@ -97,15 +84,15 @@ func TestProfileListingUsesUnifiedOutput(t *testing.T) {
 			t.Fatalf("listing missing %q:\n%s", line, response.Stdout)
 		}
 	}
-	if handler.reconfigured != 0 {
-		t.Fatalf("listing must not reconfigure: %+v", handler)
-	}
 }
 
 func TestProfileSwitchReportsThroughUnifiedOutput(t *testing.T) {
 	t.Parallel()
 	command := registeredCommand(t)
-	handler := &fakeAgentHandle{cfg: testConfig(t)}
+	cfg := testConfig(t)
+	handler := testdata.NewAgentHandle(t)
+	handler.EXPECT().Config().Return(cfg)
+	handler.EXPECT().Reconfigure().Once()
 
 	response, err := command.Execute(context.Background(), &plugin.ChatCommandInput{
 		AgentHandler: handler,
@@ -118,18 +105,18 @@ func TestProfileSwitchReportsThroughUnifiedOutput(t *testing.T) {
 	if !strings.Contains(response.Stdout, "Switched to profile: `fast`") {
 		t.Fatalf("switch confirmation missing from stdout: %q", response.Stdout)
 	}
-	if handler.cfg.Profile() != "fast" {
-		t.Fatalf("profile did not switch: %q", handler.cfg.Profile())
-	}
-	if handler.reconfigured != 1 {
-		t.Fatalf("switch must reconfigure exactly once: %+v", handler)
+	if cfg.Profile() != "fast" {
+		t.Fatalf("profile did not switch: %q", cfg.Profile())
 	}
 }
 
 func TestProfileSwitchRejectsUnknownProfile(t *testing.T) {
 	t.Parallel()
 	command := registeredCommand(t)
-	handler := &fakeAgentHandle{cfg: testConfig(t)}
+	handler := testdata.NewAgentHandle(t)
+	handler.EXPECT().Config().Return(testConfig(t))
+	// Reconfigure is deliberately unstubbed: a failed switch must not
+	// reconfigure, so any call fails as an unexpected mock call.
 
 	_, err := command.Execute(context.Background(), &plugin.ChatCommandInput{
 		AgentHandler: handler,
@@ -138,39 +125,33 @@ func TestProfileSwitchRejectsUnknownProfile(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "profile not found") {
 		t.Fatalf("expected profile-not-found error, got %v", err)
 	}
-	if handler.reconfigured != 0 {
-		t.Fatalf("a failed switch must not reconfigure: %+v", handler)
-	}
 }
 
 func TestProfileListingWithoutProfiles(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(path, []byte("version: \"1.0\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := loadConfig(t, "testdata/config-no-profiles.yml")
 
 	got := CurrentProfileMarkdown(cfg, nil)
-	if !strings.Contains(got, "Current profile: ``") || strings.Contains(got, "*>") {
+	if !strings.Contains(got, "Current profile: ``") || strings.Contains(got, "- ") {
 		t.Fatalf("unexpected empty listing: %q", got)
 	}
 }
 
 func TestProfileListingKeepsMarkdownForbiddenCharsInert(t *testing.T) {
 	t.Parallel()
-	cfg := testConfig(t)
-	handler := &fakeAgentHandle{cfg: cfg}
+	cfg := loadConfig(t, "testdata/config-markdown.yml")
 
-	// A profile carrying backticks or a leading `*` could fake the `*>`
-	// marker of the active row; the listing renders names fenced in
-	// backticks without re-interpreting their content.
-	got := CurrentProfileMarkdown(handler.cfg, nil)
-	if strings.Contains(got, "*> `fast`") {
-		t.Fatalf("inactive row must not carry the active marker: %q", got)
+	// A profile name carrying markdown emphasis could fake the current
+	// profile's bold marker; names are fenced in backticks, so only the
+	// real current profile may come out bold.
+	got := CurrentProfileMarkdown(cfg, nil)
+	if strings.Count(got, "- **") != 1 {
+		t.Fatalf("only the current profile may carry the bold marker: %q", got)
+	}
+	if !strings.Contains(got, "- **`plain`**\n") {
+		t.Fatalf("current profile must be the emphasised row: %q", got)
+	}
+	if !strings.Contains(got, "- `**evil**`\n") {
+		t.Fatalf("markdown-looking profile names must stay inert: %q", got)
 	}
 }

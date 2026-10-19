@@ -54,13 +54,13 @@ func CurrentProfileMarkdown(cfg *config.Config, messages []openai.ChatCompletion
 	model := cfg.ProfileParamString("llm.model")
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Available profiles:\n")
+	fmt.Fprintf(&sb, "Available profiles:\n\n")
 	for _, p := range profiles {
-		prefix := "  "
 		if p == current {
-			prefix = "*>"
+			fmt.Fprintf(&sb, "- **`%s`**\n", p)
+			continue
 		}
-		fmt.Fprintf(&sb, "%s `%s`\n", prefix, p)
+		fmt.Fprintf(&sb, "- `%s`\n", p)
 	}
 
 	fmt.Fprintf(&sb, "\nCurrent profile: `%s`\n", current)

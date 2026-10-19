@@ -1,0 +1,9 @@
+version: "1.0"
+profile: plain
+profiles:
+  plain:
+    llm:
+      model: plain-model
+  "**evil**":
+    llm:
+      model: evil-model

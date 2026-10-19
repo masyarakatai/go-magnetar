@@ -1,0 +1,11 @@
+version: "1.0"
+profile: main
+llm:
+  model: base-model
+profiles:
+  main:
+    llm:
+      model: main-model
+  fast:
+    llm:
+      model: fast-model
